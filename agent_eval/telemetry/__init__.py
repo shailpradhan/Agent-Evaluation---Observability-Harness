@@ -1,2 +1,51 @@
-"""OpenTelemetry instrumentation and span processors for agent observability (Phase 2)."""
+"""OpenTelemetry instrumentation and span processors for agent observability."""
 
+from agent_eval.telemetry.spans import (
+    ATTR_AGENT_FINAL_RESPONSE,
+    ATTR_AGENT_MODEL,
+    ATTR_AGENT_RUN_ID,
+    ATTR_AGENT_TASK_ID,
+    ATTR_LLM_LATENCY_MS,
+    ATTR_LLM_MODEL,
+    ATTR_LLM_PROMPT,
+    ATTR_LLM_RESPONSE,
+    ATTR_LLM_TOTAL_TOKENS,
+    ATTR_TOOL_ERROR,
+    ATTR_TOOL_INPUT,
+    ATTR_TOOL_LATENCY_MS,
+    ATTR_TOOL_NAME,
+    ATTR_TOOL_OUTPUT,
+    SPAN_AGENT_RUN,
+    SPAN_LLM_CALL,
+    SPAN_TOOL_CALL,
+    trace_agent_run,
+    trace_llm_call,
+    trace_tool_call,
+)
+from agent_eval.telemetry.tracer import get_tracer, reset_telemetry, setup_telemetry
+
+__all__ = [
+    "ATTR_AGENT_FINAL_RESPONSE",
+    "ATTR_AGENT_MODEL",
+    "ATTR_AGENT_RUN_ID",
+    "ATTR_AGENT_TASK_ID",
+    "ATTR_LLM_LATENCY_MS",
+    "ATTR_LLM_MODEL",
+    "ATTR_LLM_PROMPT",
+    "ATTR_LLM_RESPONSE",
+    "ATTR_LLM_TOTAL_TOKENS",
+    "ATTR_TOOL_ERROR",
+    "ATTR_TOOL_INPUT",
+    "ATTR_TOOL_LATENCY_MS",
+    "ATTR_TOOL_NAME",
+    "ATTR_TOOL_OUTPUT",
+    "SPAN_AGENT_RUN",
+    "SPAN_LLM_CALL",
+    "SPAN_TOOL_CALL",
+    "get_tracer",
+    "reset_telemetry",
+    "setup_telemetry",
+    "trace_agent_run",
+    "trace_llm_call",
+    "trace_tool_call",
+]
