@@ -5,14 +5,14 @@ An end-to-end testing, observability, and evaluation platform for AI agents. It 
 ## Core Lifecycle
 
 ```
-AI Agent ➔ Observe (OTel) ➔ Record ➔ Replay (Mock Tools) ➔ Evaluate (LLM Judge) ➔ Measure (DB) ➔ Compare ➔ Gate (CI)
+Task ➔ AI Agent ➔ Trajectory Capture with Open Telemetry ➔ Record ➔ Deterministic Replay Engine (MOCK TOOLS) ➔ Evaluate (Binary Rubric Judge) ➔ Regression Testing ➔ DB Persistence ➔ Artifacts Versioning
 ```
 
 ---
 
-## Foundation 1: Architecture Overview
+## Architecture Overview
 
-Foundation 1 sets up the core data contracts, schema definitions, and directory structure:
+Core data contracts, schema definitions, and directory structure:
 
 1. **Project Structure**: Modular package layout supporting agent definitions, OpenTelemetry instrumentation, task corpus management, trajectory replay, LLM judge, and metrics persistence.
 2. **Data Models (`agent_eval.models`)**:
@@ -83,12 +83,12 @@ In the next phase, an outer adapter can observe LLM/tool boundaries and map the
 returned `AgentResult` and call sequence into trajectory/trace data without
 making the agent depend on OpenTelemetry, storage, or the replay engine.
 
-### Running One Complete Phase 2 Evaluation
+### Running One Complete Evaluation
 
 Run the refund example end to end:
 
 ```powershell
-python -m agent_eval.evaluation.demo
+python -m agent_eval.demo
 ```
 
 This executes one dataset task, captures its trajectory, replays its recorded
@@ -96,51 +96,3 @@ LLM decisions and tool results without calling the original tools, evaluates
 the replay against the task's binary rubric, and returns an `EvalResult` score.
 The demo uses the deterministic `FakeLLM`; it requires no API key or external
 service.
-
-### Loading an Evaluation Dataset
-
-```python
-from agent_eval.schema import EvaluationDataset
-
-# Load versioned evaluation dataset
-dataset = EvaluationDataset.load_from_yaml("datasets/refund.yaml")
-
-print(f"Loaded {dataset.name} (v{dataset.version}) with {len(dataset.tasks)} tasks.")
-for task in dataset.tasks:
-    print(f"- Task: {task.id} -> Prompt: {task.prompt}")
-    print(f"  Expected tools: {task.expected_tools}")
-    print(f"  Rubric: {task.rubric}")
-```
-
-### Recording a Trajectory
-
-```python
-from agent_eval.models import Trajectory, ToolCall, ToolResponse, LLMCall
-
-traj = Trajectory(run_id="run_001", task_id="refund_order")
-
-# Record an LLM call
-traj.record_llm_call(
-    LLMCall(
-        model="gemini-2.5-pro",
-        prompt="Refund order #1234",
-        response="Calling lookup_order(1234)",
-        input_tokens=50,
-        output_tokens=20,
-        latency_ms=350.0
-    )
-)
-
-# Record a tool call and response
-call = ToolCall(tool="lookup_order", arguments={"order_id": "1234"})
-traj.record_tool_call(call)
-traj.record_tool_response(
-    ToolResponse(
-        tool="lookup_order",
-        input={"order_id": "1234"},
-        output={"status": "delivered", "amount": 100}
-    )
-)
-
-print(f"Trajectory recorded: {len(traj.steps)} steps, {traj.total_tokens} tokens.")
-```
