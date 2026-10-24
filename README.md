@@ -1,98 +1,145 @@
 # Agent Evaluation & Observability Harness
 
-An end-to-end testing, observability, and evaluation platform for AI agents. It instruments multi-step agent workflows via OpenTelemetry, enables deterministic offline replay using recorded mock tools, and evaluates trajectory correctness with structured LLM-as-a-judge rubrics to prevent regressions across model, prompt, and tool iterations.
+A small, provider-independent Python harness for exercising tool-using agents against versioned tasks. It captures each execution as a trajectory and OpenTelemetry spans, replays the recorded model decisions and tool results without repeating the original tool effects, grades the replay with deterministic rubric checks, and aggregates task results into comparable evaluation runs.
 
-## Core Lifecycle
+The repository contains a working vertical slice from task definition through dataset-level regression reporting. It currently uses a deterministic `FakeLLM` for its examples; a production LLM adapter, persistent run store, and CI gate are not implemented yet.
 
-```
-Task ➔ AI Agent ➔ Trajectory Capture with Open Telemetry ➔ Record ➔ Deterministic Replay Engine (MOCK TOOLS) ➔ Evaluate (Binary Rubric Judge) ➔ Regression Testing ➔ DB Persistence ➔ Artifacts Versioning
-```
+## What the Project Does
 
----
+For one task, `EvaluationPipeline` performs these steps:
 
-## Architecture Overview
+1. Runs the agent with the task prompt, injected LLM implementation, and typed tools.
+2. Wraps LLM and tool boundaries to capture a `Trajectory` and nested OpenTelemetry spans.
+3. Replays the recorded LLM decisions and tool outputs, checking that the same calls and inputs are made without invoking the original tool functions again.
+4. Evaluates the replayed trajectory against the task's binary rubric.
+5. Returns the execution artifacts and an `EvalResult`.
 
-Core data contracts, schema definitions, and directory structure:
+For a dataset, `evaluate_dataset()` repeats that workflow for each task, retains task-level errors as failed results, and computes an `EvalRun`. `compare_runs()` compares two complete runs over the same dataset version and task IDs, returning a `RegressionReport`.
 
-1. **Project Structure**: Modular package layout supporting agent definitions, OpenTelemetry instrumentation, task corpus management, trajectory replay, LLM judge, and metrics persistence.
-2. **Data Models (`agent_eval.models`)**:
-   - `Trajectory`, `TrajectoryStep`, `ToolCall`, `ToolResponse`, `LLMCall`: Full agent execution recording.
-   - `JudgeResult`, `RubricEvaluation`, `DimensionScores`: Structured judge results with each rubric item evaluated as one atomic yes/no assertion; aggregate scores remain separate.
-   - `EvalRun`, `EvalResult`, `RegressionReport`: Run metrics, pass rates, latency/token metrics, and regression detection. Results include optional safety/compliance, resolution, and side-effect outcomes plus tool/turn counts; run aggregates include p50 latency and per-task efficiency/cost fields.
-   - `DimensionScores`: Includes trajectory quality, safety/compliance, and side-effect scores. Tool-use scoring was already represented by `tool_usage`.
-   - `MockToolEntry`, `ReplaySession`: Deterministic tool replay records.
-3. **Task Schema (`agent_eval.schema`)**:
-   - `Task`: Standard evaluation task specification (`id`, `prompt`, `expected_outcome`, `expected_tools`, `rubric`, `metadata`).
-   - `EvaluationDataset`: Versioned task collection with YAML/JSON loader and serialization utilities.
+## Architecture
 
----
-
-## Directory Structure
-
-```
-Agent/
-├── pyproject.toml              # Project dependencies and configuration
-├── README.md                   # Harness overview and guide
-├── datasets/                   # Versioned evaluation task corpus
-│   ├── refund.yaml
-│   └── cancellation.yaml
-├── agent_eval/                 # Core harness package
-│   ├── schema/                 # Task and dataset schemas
-│   ├── models/                 # Trajectory, Judge, Metrics, and Replay models
-│   ├── agent/                  # Agent implementation (Phase 1 next steps)
-│   ├── telemetry/              # OpenTelemetry instrumentation (Phase 2)
-│   ├── replay/                 # Trajectory replay engine (Phase 2)
-│   ├── judge/                  # LLM judge engine (Phase 2)
-│   ├── storage/                # SQLite/Postgres persistence (Phase 3)
-│   └── evaluation/             # Test runner and regression detector (Phase 4)
-└── tests/                      # Unit test suite
+```mermaid
+flowchart LR
+    D[Versioned YAML or JSON dataset] --> T[Task and rubric]
+    T --> A[Agent orchestration]
+    L[Injected LLM implementation] --> A
+    TO[Typed tool registry and approval handler] --> A
+    A --> TR[TraceRunner]
+    TR --> R[Trajectory: LLM calls, tool calls and results, latency, tokens]
+    TR --> OT[OpenTelemetry spans: agent.run, llm.call, tool.call]
+    R --> RP[ReplayEngine]
+    RP -->|recorded decisions and mocked tool results| RT[Replayed trajectory]
+    RT --> J[Deterministic binary rubric judge]
+    J --> ER[Per-task EvalResult]
+    ER --> AG[Dataset aggregation]
+    AG --> RUN[EvalRun]
+    RUN --> C[compare_runs with baseline results]
+    C --> RR[RegressionReport]
 ```
 
----
+### Main components
+
+| Package | Responsibility |
+| --- | --- |
+| `agent_eval.schema` | Pydantic task, rubric, and versioned dataset contracts; YAML and JSON loading. |
+| `agent_eval.agent` | Provider-neutral LLM interface, structured decisions, tool registry, typed input/output validation, approval checks, and orchestration loop. |
+| `agent_eval.tracing` and `agent_eval.telemetry` | Capture trajectories and emit OpenTelemetry spans around agent runs, LLM calls, and tool calls. |
+| `agent_eval.replay` | Re-run recorded LLM decisions and serve recorded tool results, validating tool order and inputs without re-executing original tool functions. |
+| `agent_eval.judge` | Deterministic binary checks for tool sequence, tool result fields, and final-response text. |
+| `agent_eval.evaluation` | Single-task and dataset-level pipelines, metric aggregation, and baseline/candidate regression comparison. |
+| `agent_eval.models` | Shared schemas for trajectories, replay sessions, rubric judgments, task results, runs, and regression reports. |
+
+## Metrics and Regression
+
+Each `EvalResult` represents one task and includes its rubric score and pass/fail status, measured execution latency, token total, resolution status, tool-call count, LLM-turn count, timestamp, and an optional error. Safety, policy, and side-effect fields exist in the result model, but the current evaluator does not populate them.
+
+Each `EvalRun` aggregates the task results:
+
+| Metric | Meaning |
+| --- | --- |
+| Mean score | Arithmetic mean of task rubric scores, from 0 to 1. |
+| Pass rate | Fraction of tasks passing every rubric check. |
+| Passed / failed / total tasks | Task counts for the run; an execution or grading error counts as failed with score 0. |
+| Resolved tasks | Count of results with a non-empty final response. |
+| Total tokens and tokens per task | Sum and average of trajectory token totals. Provider adapters must supply token counts; the demo fake returns none. |
+| Tool calls and agent turns per task | Average number of recorded tool calls and LLM calls. |
+| p50 / p95 latency | Nearest-rank percentiles across task execution latency in milliseconds. |
+
+`compare_runs(baseline.run, candidate.run, baseline.results, candidate.results)` reports mean-score and pass-rate differences, task IDs whose scores dropped, and the p95 latency difference. A quality regression is detected when the mean score or pass rate drops by its configured threshold, or any task drops by its task threshold. Each threshold defaults to `0.05`. Latency change is reported but does not currently trigger regression detection. Comparisons reject different dataset versions, mismatched task coverage, duplicate task results, or results associated with the wrong run.
+
+The model includes optional token-cost fields, but the current aggregation does not estimate or populate monetary cost. Dataset aggregation is in-memory; there is no historical run database or automatic CI failure gate yet.
 
 ## Quickstart
 
-### Running the Deterministic Agent Example
+Python 3.10 or later is required. Install the package and development dependencies:
 
-The first agent-layer implementation is provider-independent. `Agent` receives
-an `LLM` implementation and a collection of tools; `FakeLLM` simulates only the
-example refund flow and does not perform real reasoning or call an external API.
+```powershell
+python -m pip install -e ".[dev]"
+```
+
+Run the provider-independent agent demonstration:
 
 ```powershell
 python -m agent_eval.agent.demo
 ```
 
-The example prints a final response and the ordered tool calls. The LLM and
-tools are injected when constructing `Agent`, so a future provider adapter can
-implement `LLM.generate(messages) -> LLMDecision` without changing the
-orchestration code. The adapter translates its provider's native tool calls and
-final text into this typed decision; the agent does not parse provider JSON.
-Tool inputs and outputs are validated with Pydantic models.
-Tool implementations receive their declared Pydantic input model and return
-their declared Pydantic output model. The sample store includes delivered order
-`1234` and cancelled order `5678`; unknown orders produce an explicit lookup
-error, and refunds for an eligible order are idempotent within the process.
-Refund processing requires an injected approval handler; the demo explicitly
-auto-approves because its refund implementation only changes in-memory demo
-state. Without an approval handler, the agent rejects protected calls. The
-refund tool also formats its final status from the validated refund result, so
-the LLM cannot override that outcome with an unsupported success claim.
-
-The agent layer intentionally does not record telemetry or persist executions.
-In the next phase, an outer adapter can observe LLM/tool boundaries and map the
-returned `AgentResult` and call sequence into trajectory/trace data without
-making the agent depend on OpenTelemetry, storage, or the replay engine.
-
-### Running One Complete Evaluation
-
-Run the refund example end to end:
+Run the end-to-end single-task trace, replay, and evaluation demonstration:
 
 ```powershell
 python -m agent_eval.demo
 ```
 
-This executes one dataset task, captures its trajectory, replays its recorded
-LLM decisions and tool results without calling the original tools, evaluates
-the replay against the task's binary rubric, and returns an `EvalResult` score.
-The demo uses the deterministic `FakeLLM`; it requires no API key or external
-service.
+Run the test suite:
+
+```powershell
+python -m pytest
+```
+
+## Evaluate and Compare a Dataset
+
+```python
+from agent_eval.agent import Agent, FakeLLM, create_default_tools
+from agent_eval.evaluation import EvaluationPipeline, compare_runs
+from agent_eval.schema.dataset import EvaluationDataset
+
+# This FakeLLM is only a deterministic refund-demo simulator.
+dataset = EvaluationDataset.load_from_yaml("datasets/refund.yaml")
+agent = Agent(
+    llm=FakeLLM(),
+    tools=create_default_tools(),
+    approval_handler=lambda _tool_name, _arguments: True,
+)
+pipeline = EvaluationPipeline(agent)
+
+baseline = pipeline.evaluate_dataset(
+    dataset, run_id="baseline", prompt_version="v1"
+)
+candidate = pipeline.evaluate_dataset(
+    dataset, run_id="candidate", prompt_version="v2"
+)
+report = compare_runs(
+    baseline.run,
+    candidate.run,
+    baseline.results,
+    candidate.results,
+)
+print(report.summary)
+```
+
+For a real agent, implement the `LLM.generate(messages) -> LLMDecision` interface and inject it into `Agent`. Supply an approval handler for tools marked as requiring approval. The sample refund tools operate on in-memory demo data; approving them in this example is not a production authorization policy.
+
+## Datasets
+
+The repository includes YAML examples for refunds and order cancellation. A dataset has a version, name, optional description and metadata, and a list of tasks. Each task contains an ID, prompt, expected outcome/tools, metadata, and rubric checks. Supported rubric kinds are:
+
+- `tool_sequence`: exact ordered list of tool names.
+- `tool_result_contains`: expected fields within a successful tool output.
+- `final_response_contains`: case-insensitive substring in the final response.
+
+The dataset version is used to guard comparisons. Keep it stable for comparable evaluations and bump it when task or rubric changes would make historical scores incomparable.
+
+## Current Implementation and Next Extensions
+
+Implemented now: typed agent/tool orchestration, approval-gated tools, OpenTelemetry instrumentation, in-memory trajectory capture, deterministic replay, binary rubric judging, per-task evaluation, dataset aggregation, and threshold-based run comparison. Unit tests cover the core agent, schema, telemetry, replay, judge, metrics, and pipeline components.
+
+Not implemented yet: SQLite/PostgreSQL persistence, a production LLM adapter, an LLM-based judge, CI regression gating, online evaluation, dashboards, and artifact storage/versioning. `agent_eval.storage` is currently a placeholder. Telemetry captures prompt, response, tool input, and tool output content when spans are recorded; add redaction or content-capture controls before using it with sensitive production data.
