@@ -43,6 +43,7 @@ htmlcov/
 # Persistence & Harness artifacts
 *.db
 *.sqlite3
+.env
 traces/
 replays/
 logs/

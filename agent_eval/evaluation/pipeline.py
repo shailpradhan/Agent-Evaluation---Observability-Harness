@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import ceil
+from typing import Protocol
 from uuid import uuid4
 
 from agent_eval.agent.agent import Agent
@@ -38,6 +39,14 @@ class DatasetEvaluationOutcome:
     outcomes: list[EvaluationOutcome]
 
 
+class EvaluationStore(Protocol):
+    """Persistence interface used by the dataset evaluation pipeline."""
+
+    def save_dataset_evaluation(
+        self, outcome: DatasetEvaluationOutcome
+    ) -> None: ...
+
+
 class EvaluationPipeline:
     """Evaluate one task or a full dataset with the configured agent."""
 
@@ -47,11 +56,13 @@ class EvaluationPipeline:
         replay_engine: ReplayEngine | None = None,
         judge: BinaryRubricJudge | None = None,
         trace_runner: TraceRunner | None = None,
+        store: EvaluationStore | None = None,
     ) -> None:
         self.agent = agent
         self.replay_engine = replay_engine or ReplayEngine()
         self.judge = judge or BinaryRubricJudge()
         self.trace_runner = trace_runner or TraceRunner()
+        self.store = store
 
     def evaluate(self, task: Task, *, run_id: str | None = None) -> EvaluationOutcome:
         """Execute, trace, replay, judge, and score one task."""
@@ -150,7 +161,10 @@ class EvaluationPipeline:
             p95_latency_ms=_percentile(latencies, 0.95),
             metadata={"dataset_name": dataset.name, **(metadata or {})},
         )
-        return DatasetEvaluationOutcome(run=run, results=results, outcomes=outcomes)
+        outcome = DatasetEvaluationOutcome(run=run, results=results, outcomes=outcomes)
+        if self.store is not None:
+            self.store.save_dataset_evaluation(outcome)
+        return outcome
 
 
 def compare_runs(

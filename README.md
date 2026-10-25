@@ -33,6 +33,7 @@ flowchart LR
     J --> ER[Per-task EvalResult]
     ER --> AG[Dataset aggregation]
     AG --> RUN[EvalRun]
+    RUN --> DB[(PostgreSQL: run summaries, task results, artifacts)]
     RUN --> C[compare_runs with baseline results]
     C --> RR[RegressionReport]
 ```
@@ -48,6 +49,7 @@ flowchart LR
 | `agent_eval.judge` | Deterministic binary checks for tool sequence, tool result fields, and final-response text. |
 | `agent_eval.evaluation` | Single-task and dataset-level pipelines, metric aggregation, and baseline/candidate regression comparison. |
 | `agent_eval.models` | Shared schemas for trajectories, replay sessions, rubric judgments, task results, runs, and regression reports. |
+| `agent_eval.storage` | Transactional PostgreSQL storage for aggregate runs, task results, and successful-task artifacts. |
 
 ## Metrics and Regression
 
@@ -128,6 +130,79 @@ print(report.summary)
 
 For a real agent, implement the `LLM.generate(messages) -> LLMDecision` interface and inject it into `Agent`. Supply an approval handler for tools marked as requiring approval. The sample refund tools operate on in-memory demo data; approving them in this example is not a production authorization policy.
 
+## PostgreSQL Persistence
+
+`PostgresStore` persists a complete dataset evaluation transactionally. It creates
+four tables on initialization:
+
+- `eval_runs`: indexed run metadata and the complete `EvalRun` JSONB payload.
+- `eval_results`: one indexed row per task and the complete `EvalResult` JSONB payload.
+- `eval_artifacts`: JSONB task specification, agent result, original trajectory,
+  replay session and trajectory, and rubric judge result for each successful task.
+- `regression_reports`: persisted baseline/candidate comparison summaries.
+
+Task failures are retained in `eval_results`; because there is no complete trace
+for a failed pipeline execution, they do not have an artifact row. Unique and
+foreign-key constraints protect task/run associations, and the run plus all its
+results and artifacts are committed together.
+
+Use the store directly with the dataset pipeline:
+
+```python
+import os
+
+from agent_eval.evaluation import EvaluationPipeline
+from agent_eval.storage import PostgresStore
+
+store = PostgresStore(os.environ["DATABASE_URL"])
+store.initialize()
+outcome = EvaluationPipeline(agent, store=store).evaluate_dataset(dataset)
+
+saved_run = store.get_run(outcome.run.run_id)
+saved_results = store.get_results(outcome.run.run_id)
+task_artifacts = store.get_artifacts(outcome.run.run_id, "refund_order_1234")
+```
+
+The `DATABASE_URL` value is a standard psycopg PostgreSQL DSN. `list_runs()`,
+`get_run()`, `get_results()`, and `get_artifacts()` provide basic history access.
+Use `save_regression_report(report)` and `get_regression_report(baseline_id,
+candidate_id)` to retain run comparisons.
+Run summaries, task results, and artifacts are stored in PostgreSQL JSONB, so
+they remain available after the app container exits.
+
+## Docker Compose: App, PostgreSQL, and pgAdmin
+
+The Compose stack contains the evaluation application, PostgreSQL 16, and
+pgAdmin 4. The app waits until PostgreSQL reports healthy, executes the bundled
+refund dataset, and exits after storing the evaluation. The database and pgAdmin
+stay running with named volumes for their data.
+
+Copy the development environment file and start all services:
+
+```powershell
+Copy-Item .env.example .env
+docker compose up --build
+```
+
+The app logs its generated run ID and aggregate score. Open pgAdmin at
+`http://localhost:5050` and sign in using `PGADMIN_DEFAULT_EMAIL` and
+`PGADMIN_DEFAULT_PASSWORD` from `.env`. Register a server with host `postgres`,
+port `5432`, database `agent_eval`, and the configured PostgreSQL username and
+password. Inside the Compose network, pgAdmin reaches the database using the
+service name `postgres`; from the host, PostgreSQL is published at
+`localhost:5432`.
+
+To run another evaluation while leaving the database and pgAdmin online:
+
+```powershell
+docker compose run --build --rm app
+```
+
+Stop the services and preserve stored data with `docker compose down`. To remove
+the local database and pgAdmin data volumes as well, use `docker compose down -v`.
+The default credentials in `.env.example` are for local development; replace them
+before using this stack outside a local environment.
+
 ## Datasets
 
 The repository includes YAML examples for refunds and order cancellation. A dataset has a version, name, optional description and metadata, and a list of tasks. Each task contains an ID, prompt, expected outcome/tools, metadata, and rubric checks. Supported rubric kinds are:
@@ -142,4 +217,4 @@ The dataset version is used to guard comparisons. Keep it stable for comparable 
 
 Implemented now: typed agent/tool orchestration, approval-gated tools, OpenTelemetry instrumentation, in-memory trajectory capture, deterministic replay, binary rubric judging, per-task evaluation, dataset aggregation, and threshold-based run comparison. Unit tests cover the core agent, schema, telemetry, replay, judge, metrics, and pipeline components.
 
-Not implemented yet: SQLite/PostgreSQL persistence, a production LLM adapter, an LLM-based judge, CI regression gating, online evaluation, dashboards, and artifact storage/versioning. `agent_eval.storage` is currently a placeholder. Telemetry captures prompt, response, tool input, and tool output content when spans are recorded; add redaction or content-capture controls before using it with sensitive production data.
+Not implemented yet: a production LLM adapter, an LLM-based judge, CI regression gating, online evaluation, dashboards, and telemetry artifact versioning. Telemetry captures prompt, response, tool input, and tool output content when spans are recorded; add redaction or content-capture controls before using it with sensitive production data.
